@@ -17,17 +17,19 @@ Blockers: None
 🏁 Definition of Done (DoD)
 Environment has HailoRT SDK + HEF compiled for yolov8m.
 Reads RTSP stream and maintains ≥20 FPS ingestion.
-Inference runs on Hailo-8 (not CPU).
+(you can use http://admin:clancy252629@192.168.105.120:554/cam/realmonitor?channel=1&subtype=1 to test this all)
+Inference runs on Hailo 10H (not CPU).
 Detects COCO classes 2 (car), 3 (motorcycle), 5 (bus), 7 (truck).
 ByteTrack assigns persistent unique IDs across frames.
 Maintains running total_count = number of unique IDs ever seen.
+Saves to .jpg the video frame every time a new car is detected (preferably in a /debug directory)
 Every 5 min, row (timestamp, total_count) inserted into Postgres.
 App survives a 10-minute continuous run without crash.
 
 🔄 The Phases
 Phase A — ENV
-Plan: Verify Hailo hardware (hailortcli scan). Create venv. Install deps (hailo-apps-infra, opencv-python, supervision, psycopg[binary], apscheduler). Download yolov8m.hef. Stand up Postgres via docker-compose. Create schema.sql.
-Build: requirements.txt, docker-compose.yml, schema.sql, .env.example.
+Plan: Verify Hailo hardware (hailortcli scan). Create venv. Install deps (hailo-apps-infra, opencv-python, supervision, psycopg[binary], apscheduler). yolov8m is already download in the model zoo. Stand up Postgres via direct install. Create schema.sql.
+Build: requirements.txt, schema.sql, .env.example.
 Test: python -c "import hailo_platform, supervision, psycopg2" succeeds. docker compose ps shows postgres healthy.
 Phase B — INGEST
 Plan: Create src/ingest.py with RTSPSource(uri, target_fps=20). Use OpenCV backed by GStreamer. Drop/duplicate frames to maintain exactly 20 FPS. Use a bounded queue.
