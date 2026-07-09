@@ -199,7 +199,7 @@ class HailoYoloDetector:
         """Release the configured model and VDevice resources."""
         self._infer.close()
 
-    def __enter__(self) -> "HailoYoloDetector":
+    def __enter__(self) -> HailoYoloDetector:
         return self
 
     def __exit__(self, *exc) -> None:
