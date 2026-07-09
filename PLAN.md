@@ -11,8 +11,8 @@ If tests fail, read the error, fix the code, and test again.
 Do not stop until all DoD criteria are met.
 
 📍 Current State
-Current Phase: Phase B (INGEST)
-Last Action: Phase A complete. Built HailoRT 5.3.0 from source (libhailort + hailortcli + pyhailort wheel), created venv_hailo_apps, installed deps (requirements.txt). Postgres 16 installed directly (not docker), DB vehicle_counts + schema.sql applied, user vehicle_app created. yolov8m.hef (hailo10h, MZ v5.3.0) downloaded to /usr/local/hailo/resources/models/hailo10h/ and parses OK (640x640 in, NMS out). Import test `python -c "import hailo_platform, supervision, psycopg2"` PASSED. pg_isready healthy.
+Current Phase: Phase C (INFER)
+Last Action: Phase B complete. src/ingest.py implements RTSPSource(uri, target_fps=20) with bounded queue, drop/duplicate re-timing, SourceLost exception. Tested against local mediamtx RTSP server (25fps H.264 publisher): 60s run min FPS 19.99 / avg 20.00 -> PASS; killing the publisher raised SourceLost after 112 frames -> PASS. OpenCV build here lacks GStreamer so FFMPEG-TCP backend is used (code prefers GStreamer when available). Phase A: HailoRT 5.3.0 built from source (libhailort + hailortcli + pyhailort wheel), venv_hailo_apps, Postgres 16 direct install with vehicle_counts DB + schema.sql, yolov8m.hef (hailo10h, MZ v5.3.0) at /usr/local/hailo/resources/models/hailo10h/, import test PASSED.
 Blockers: No physical Hailo device in this dev VM (`hailortcli scan` -> none) — on-device inference tests (Phase C latency/monitor) must run on the target Hailo-10H host. RTSP camera 192.168.105.120:554 accepts TCP connects but does not answer RTSP handshakes from this VM (likely LAN-only ACL) — Phase B live-stream test needs the target network.
 🏁 Definition of Done (DoD)
 Environment has HailoRT SDK + HEF compiled for yolov8m.
