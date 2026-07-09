@@ -11,9 +11,9 @@ If tests fail, read the error, fix the code, and test again.
 Do not stop until all DoD criteria are met.
 
 📍 Current State
-Current Phase: Phase A (ENV)
-Last Action: Project initialized.
-Blockers: None
+Current Phase: Phase B (INGEST)
+Last Action: Phase A complete. Built HailoRT 5.3.0 from source (libhailort + hailortcli + pyhailort wheel), created venv_hailo_apps, installed deps (requirements.txt). Postgres 16 installed directly (not docker), DB vehicle_counts + schema.sql applied, user vehicle_app created. yolov8m.hef (hailo10h, MZ v5.3.0) downloaded to /usr/local/hailo/resources/models/hailo10h/ and parses OK (640x640 in, NMS out). Import test `python -c "import hailo_platform, supervision, psycopg2"` PASSED. pg_isready healthy.
+Blockers: No physical Hailo device in this dev VM (`hailortcli scan` -> none) — on-device inference tests (Phase C latency/monitor) must run on the target Hailo-10H host. RTSP camera 192.168.105.120:554 accepts TCP connects but does not answer RTSP handshakes from this VM (likely LAN-only ACL) — Phase B live-stream test needs the target network.
 🏁 Definition of Done (DoD)
 Environment has HailoRT SDK + HEF compiled for yolov8m.
 Reads RTSP stream and maintains ≥20 FPS ingestion.
