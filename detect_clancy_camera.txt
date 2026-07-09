@@ -1,0 +1,7 @@
+hailo-detect \
+  --input "rtsp://admin:clancy252629@192.168.105.120:554/cam/realmonitor?channel=1&subtype=1" \
+  --hef-path yolov8s \
+  --arch hailo10h \
+  -b 1 \
+  --show-fps \
+  --enable-watchdog

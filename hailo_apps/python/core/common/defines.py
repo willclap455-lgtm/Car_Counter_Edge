@@ -305,7 +305,7 @@ CAMERA_KEYWORDS = ["usb", "rpi"]
 BASIC_PIPELINES_VIDEO_EXAMPLE_NAME = "example.mp4"
 
 # Gstreamer pipeline defaults
-GST_VIDEO_SINK = "autovideosink"
+GST_VIDEO_SINK = "waylandsink"
 
 # Gen AI app defaults
 VLM_CHAT_APP = "vlm_chat"
@@ -329,9 +329,7 @@ TARGET_PLAYBACK_SR = 48000  # Target sample rate for playback (standard for hard
 CHUNK_SIZE = 1024  # Number of frames per buffer
 
 VOICE_ASSISTANT_APP = "voice_assistant"
-VOICE_ASSISTANT_MODEL_NAME = "Qwen2.5-1.5B-Instruct"
-
-# Piper TTS defaults
+VOICE_ASSISTANT_MODEL_NAME = "Qwen2.5-1.5B-Instruct" # Piper TTS defaults TTS_MODEL_NAME = "en_US-amy-low"
 TTS_MODEL_NAME = "en_US-amy-low"
 TTS_MODELS_DIR = str(REPO_ROOT / "local_resources" / "piper_models")
 TTS_ONNX_PATH = str(Path(TTS_MODELS_DIR) / f"{TTS_MODEL_NAME}.onnx")

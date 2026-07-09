@@ -1,0 +1,6 @@
+gst-launch-1.0 -v \
+rtspsrc location="rtsp://admin:clancy252629@192.168.105.120:554/cam/realmonitor?channel=1&subtype=2" protocols=tcp latency=100 \
+! rtph264depay \
+! h264parse \
+! avdec_h264 \
+! autovideosink

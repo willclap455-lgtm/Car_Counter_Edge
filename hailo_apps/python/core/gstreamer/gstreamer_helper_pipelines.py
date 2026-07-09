@@ -162,9 +162,11 @@ def SOURCE_PIPELINE(
         source_element = (
             f"ximagesrc xid={video_source} ! {QUEUE(name=f'{name}queue_scale_')} ! videoscale ! "
         )
-    elif source_type == 'rtsp':  # RTSP stream handling
+    elif source_type == 'rtsp':  #RTSP stream handling
         source_element = (
-            f'rtspsrc location="{video_source}" name={name} ! '
+            f'rtspsrc location="{video_source}" protocols=tcp latency=300 drop-on-latency=true name={name} ! '
+            f'rtph264depay ! '
+            f'h264parse ! '
             f'{QUEUE(name=f"{name}_queue_decode")} ! '
             f'decodebin name={name}_decodebin ! '
         )
