@@ -1,0 +1,19 @@
+# Vehicle Counting App — Python dependencies (Phase A)
+#
+# NOTE: hailo_platform (pyhailort) is NOT on PyPI. It is built from the
+# HailoRT sources (https://github.com/hailo-ai/hailort, tag v5.3.0) or
+# installed from the wheel shipped with the HailoRT SDK .deb package.
+# See README / PLAN.md Phase A.
+
+opencv-python<=4.10.0.84
+numpy<2.0
+# <0.28: sv.ByteTrack is deprecated in 0.28+ and removed in 0.30
+supervision>=0.25.0,<0.28
+psycopg[binary,pool]>=3.1
+psycopg2-binary>=2.9
+apscheduler>=3.10,<4.0
+python-dotenv
+pyyaml
+loguru
+scipy>=1.9.3
+tqdm
