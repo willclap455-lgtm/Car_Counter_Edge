@@ -18,7 +18,6 @@ Blockers: No physical Hailo device in this dev VM (`hailortcli scan` -> none) �
 🏁 Definition of Done (DoD)
 Environment has HailoRT SDK + HEF compiled for yolov8m.
 Reads RTSP stream and maintains ≥20 FPS ingestion.
-(you can use http://admin:clancy252629@192.168.105.120:554/cam/realmonitor?channel=1&subtype=1 to test this all)
 Inference runs on Hailo 10H (not CPU).
 Detects COCO classes 2 (car), 3 (motorcycle), 5 (bus), 7 (truck).
 ByteTrack assigns persistent unique IDs across frames.
