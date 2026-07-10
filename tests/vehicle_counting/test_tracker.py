@@ -5,9 +5,10 @@ frame one after another, driving the tracker with per-frame detections.
 """
 
 import numpy as np
+import pytest
 
 from src.detector import Detections
-from src.tracker import VehicleTracker
+from src.tracker import VehicleTracker, classify_direction
 
 
 def _car_box(x: float, y: float = 400.0, w: float = 160.0, h: float = 90.0) -> list[float]:
@@ -25,19 +26,25 @@ def _dets(boxes: list[list[float]], class_id: int = 2, conf: float = 0.9) -> Det
     )
 
 
-def _drive_clip(tracker: VehicleTracker) -> list[dict[int, list[float]]]:
-    """Three cars cross left-to-right, staggered in time; returns per-frame tracks."""
-    frames = []
+def _clip_frames() -> list[list[list[float]]]:
+    """Per-frame box lists: three cars cross left-to-right, staggered in time."""
     speed = 12.0  # px/frame
     # (start_frame, end_frame, x at start)
     cars = [(0, 60, -100.0), (30, 90, -100.0), (60, 120, -100.0)]
-    per_frame_tracks: list[dict[int, list[float]]] = []
+    frames = []
     for f in range(130):
         boxes = []
         for start, end, x0 in cars:
             if start <= f < end:
                 boxes.append(_car_box(x0 + speed * (f - start) + 150))
         frames.append(boxes)
+    return frames
+
+
+def _drive_clip(tracker: VehicleTracker) -> list[dict[int, list[float]]]:
+    """Drive the 3-car clip through the tracker; returns per-frame tracks."""
+    per_frame_tracks: list[dict[int, list[float]]] = []
+    for boxes in _clip_frames():
         tracked = tracker.update(_dets(boxes))
         per_frame_tracks.append(
             {int(t): tracked.xyxy[i].tolist() for i, t in enumerate(tracked.tracker_id)}
@@ -91,3 +98,68 @@ def test_reset_clears_counts():
     assert tracker.total_count == 1
     tracker.reset()
     assert tracker.total_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Direction of travel
+# ---------------------------------------------------------------------------
+
+
+def test_classify_direction_all_axes():
+    assert classify_direction(50.0, 5.0, 20.0) == "RIGHT"
+    assert classify_direction(-50.0, 5.0, 20.0) == "LEFT"
+    assert classify_direction(5.0, 50.0, 20.0) == "DOWN"  # y grows downward
+    assert classify_direction(5.0, -50.0, 20.0) == "UP"
+    assert classify_direction(3.0, 3.0, 20.0) == "UNKNOWN"  # below threshold
+
+
+def _drive_moving_car(tracker: VehicleTracker, step_x: float, step_y: float, frames: int = 30):
+    """One car moving (step_x, step_y) px/frame; returns all emitted events."""
+    events = []
+    x, y = 400.0, 300.0
+    for _ in range(frames):
+        tracked = tracker.update(_dets([_car_box(x, y)]))
+        events.extend(tracked.events)
+        x += step_x
+        y += step_y
+    return events
+
+
+@pytest.mark.parametrize(
+    ("step_x", "step_y", "expected"),
+    [
+        (12.0, 0.0, "RIGHT"),
+        (-12.0, 0.0, "LEFT"),
+        (0.0, 12.0, "DOWN"),
+        (0.0, -12.0, "UP"),
+    ],
+)
+def test_direction_resolved_for_moving_vehicle(step_x, step_y, expected):
+    tracker = VehicleTracker(frame_rate=20)
+    events = _drive_moving_car(tracker, step_x, step_y)
+    assert len(events) == 1, f"expected exactly one event, got {events}"
+    event = events[0]
+    assert event.direction == expected
+    assert event.vehicle_id in tracker.seen_ids
+    assert event.timestamp > 0
+    assert event.class_id == 2
+
+
+def test_one_event_per_vehicle_in_clip():
+    tracker = VehicleTracker(frame_rate=20)
+    events = []
+    _ = [events.extend(tracker.update(_dets(b)).events) for b in _clip_frames()]
+    assert tracker.total_count == 3
+    assert len(events) == 3
+    assert len({e.vehicle_id for e in events}) == 3
+    assert all(e.direction == "RIGHT" for e in events)  # clip cars move left-to-right
+
+
+def test_stationary_vehicle_times_out_as_unknown():
+    tracker = VehicleTracker(frame_rate=20, max_pending_frames=10)
+    events = []
+    for _ in range(15):
+        tracked = tracker.update(_dets([_car_box(400.0)]))  # never moves
+        events.extend(tracked.events)
+    assert len(events) == 1
+    assert events[0].direction == "UNKNOWN"

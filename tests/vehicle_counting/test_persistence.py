@@ -34,9 +34,11 @@ pytestmark = pytest.mark.skipif(not _postgres_available(), reason="local Postgre
 def clean_table():
     with psycopg.connect(DSN) as conn:
         conn.execute("DELETE FROM vehicle_counts")
+        conn.execute("DELETE FROM vehicle_events")
     yield
     with psycopg.connect(DSN) as conn:
         conn.execute("DELETE FROM vehicle_counts")
+        conn.execute("DELETE FROM vehicle_events")
 
 
 def _row_count() -> int:
@@ -89,6 +91,48 @@ def test_survives_postgres_outage_and_resumes(clean_table):
         subprocess.run(["sudo", "service", "postgresql", "start"], capture_output=True)
         time.sleep(2)
         recorder.stop()
+
+
+def test_record_vehicle_inserts_event_row(clean_table):
+    recorder = CountRecorder(DSN, lambda: 0, interval_minutes=60.0)
+    recorder.start()
+    try:
+        ts = time.time()
+        assert recorder.record_vehicle(17, "LEFT", ts=ts) is True
+        assert recorder.record_vehicle(18, "UP") is True
+        with psycopg.connect(DSN) as conn:
+            rows = conn.execute(
+                "SELECT vehicle_id, direction, extract(epoch from ts) "
+                "FROM vehicle_events ORDER BY vehicle_id"
+            ).fetchall()
+        assert [(r[0], r[1]) for r in rows] == [(17, "LEFT"), (18, "UP")]
+        assert abs(float(rows[0][2]) - ts) < 1.0, "stored ts should match event ts"
+    finally:
+        recorder.stop(flush=False)
+
+
+@pytest.mark.skipif(not _sudo_available(), reason="needs passwordless sudo to restart postgres")
+def test_record_vehicle_buffers_during_outage_and_drains(clean_table):
+    recorder = CountRecorder(DSN, lambda: 0, interval_minutes=INTERVAL_MINUTES_5S)
+    recorder.start()
+    try:
+        subprocess.run(["sudo", "service", "postgresql", "stop"], check=True, capture_output=True)
+        time.sleep(1)
+        assert recorder.record_vehicle(99, "RIGHT") is False, "insert should fail during outage"
+        assert len(recorder._event_buffer) == 1
+
+        subprocess.run(["sudo", "service", "postgresql", "start"], check=True, capture_output=True)
+        deadline = time.monotonic() + 30
+        while recorder.events_written < 1 and time.monotonic() < deadline:
+            time.sleep(1)  # scheduler tick drains the buffer
+        assert recorder.events_written == 1, "buffered event was not drained after outage"
+        with psycopg.connect(DSN) as conn:
+            row = conn.execute("SELECT vehicle_id, direction FROM vehicle_events").fetchone()
+        assert row == (99, "RIGHT")
+    finally:
+        subprocess.run(["sudo", "service", "postgresql", "start"], capture_output=True)
+        time.sleep(2)
+        recorder.stop(flush=False)
 
 
 def test_flush_writes_immediately(clean_table):

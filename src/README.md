@@ -6,10 +6,27 @@ Postgres for periodic count persistence.
 
 ```
 RTSPSource (20 FPS) -> HailoYoloDetector (yolov8m HEF, on-chip NMS)
-                    -> VehicleTracker (ByteTrack, unique-ID count)
-                    -> debug/*.jpg snapshot per new vehicle
-                    -> CountRecorder -> Postgres (every 5 min)
+                    -> VehicleTracker (ByteTrack, unique-ID count,
+                                       direction of travel)
+                    -> debug/<id>-<timestamp>-<direction>.jpg per new vehicle
+                    -> CountRecorder -> Postgres
+                         - vehicle_counts: (ts, total_count) every 5 min
+                         - vehicle_events: (vehicle_id, ts, direction)
+                           immediately per new vehicle
 ```
+
+## Direction of travel
+
+Each vehicle's direction is the dominant axis of its net centroid movement in
+frame coordinates: `UP`, `DOWN`, `LEFT`, or `RIGHT` (y grows downward, so a
+vehicle moving toward the bottom of the frame is `DOWN`). A new vehicle stays
+pending until it has moved at least `min_displacement_px` (default 20 px);
+if it never moves enough within `max_pending_frames` (default 60 ≈ 3 s at
+20 FPS) it is recorded as `UNKNOWN`. When the direction resolves:
+
+- a snapshot is saved as `debug/<vehicle_id>-<YYYYmmdd_HHMMSS>-<direction>.jpg`
+- a `(vehicle_id, ts, direction)` row is inserted into `vehicle_events`
+  (buffered and retried if Postgres is down)
 
 ## Modules
 
@@ -17,8 +34,8 @@ RTSPSource (20 FPS) -> HailoYoloDetector (yolov8m HEF, on-chip NMS)
 |---|---|---|
 | `ingest.py` | `RTSPSource` | RTSP capture, re-timed to exactly 20 FPS (drop/duplicate), bounded queue, raises `SourceLost` |
 | `detector.py` | `HailoYoloDetector` | HEF on shared VDevice via `HailoInfer`, letterbox preprocess, NMS decode, class filter {2,3,5,7} |
-| `tracker.py` | `VehicleTracker` | `supervision.ByteTrack` wrapper; `seen_ids` set, `total_count`, reports new IDs |
-| `persistence.py` | `CountRecorder` | APScheduler background job inserting `(ts, total_count)` via psycopg pool; survives DB outages |
+| `tracker.py` | `VehicleTracker` | `supervision.ByteTrack` wrapper; `seen_ids` set, `total_count`, per-track motion history, emits `VehicleEvent(vehicle_id, direction, ts)` per new vehicle |
+| `persistence.py` | `CountRecorder` | APScheduler background job inserting `(ts, total_count)`; `record_vehicle()` inserts per-vehicle `(vehicle_id, ts, direction)` rows immediately; survives DB outages |
 | `main.py` | `VehicleCounterApp` | Composition + hardening: RTSP auto-reconnect (backoff), detector reset on inference failure, SIGTERM/SIGINT flush |
 
 ## Setup (once per host)

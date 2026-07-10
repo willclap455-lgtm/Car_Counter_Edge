@@ -3,6 +3,11 @@
 Composes: RTSPSource -> HailoYoloDetector -> VehicleTracker
           -> (debug snapshots + logger + CountRecorder -> Postgres)
 
+Each newly detected vehicle emits a VehicleEvent once its direction of
+travel (UP / DOWN / LEFT / RIGHT, in frame coordinates) resolves:
+- an annotated snapshot is saved as <vehicle_id>-<timestamp>-<direction>.jpg
+- a (vehicle_id, timestamp, direction) row is inserted into vehicle_events
+
 Hardening (Phase G):
 - RTSP auto-reconnect with exponential backoff on SourceLost.
 - Hailo detector reset (release + reacquire VDevice) on inference exceptions.
@@ -32,7 +37,7 @@ from hailo_apps.python.core.common.hailo_logger import get_logger, init_logging
 from src.detector import COCO_VEHICLE_NAMES, Detections, HailoYoloDetector
 from src.ingest import RTSPSource, SourceLost
 from src.persistence import CountRecorder
-from src.tracker import TrackedObjects, VehicleTracker
+from src.tracker import TrackedObjects, VehicleEvent, VehicleTracker
 
 logger = get_logger(__name__)
 
@@ -119,29 +124,43 @@ class VehicleCounterApp:
         self.detector = self._create_detector()
         logger.info("Detector reset complete")
 
-    def _save_snapshot(self, frame: np.ndarray, tracked: TrackedObjects) -> None:
-        """Save an annotated .jpg for each newly seen vehicle id."""
+    def _handle_vehicle_event(
+        self, frame: np.ndarray, tracked: TrackedObjects, event: VehicleEvent
+    ) -> None:
+        """New vehicle with resolved direction: save snapshot + DB row.
+
+        Snapshot filename: <vehicle_id>-<timestamp>-<direction>.jpg
+        """
         annotated = frame.copy()
+        # Event vehicle in red, other active tracks in green.
         for i, tid in enumerate(tracked.tracker_id):
             x1, y1, x2, y2 = tracked.xyxy[i].astype(int)
-            is_new = int(tid) in tracked.new_ids
-            color = (0, 0, 255) if is_new else (0, 200, 0)
+            is_event = int(tid) == event.vehicle_id
+            color = (0, 0, 255) if is_event else (0, 200, 0)
             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
             name = COCO_VEHICLE_NAMES.get(int(tracked.class_id[i]), "?")
+            label = f"{name} #{int(tid)}" + (f" {event.direction}" if is_event else "")
             cv2.putText(
                 annotated,
-                f"{name} #{int(tid)}",
+                label,
                 (x1, max(0, y1 - 6)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
                 color,
                 2,
             )
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        ids = "_".join(str(i) for i in tracked.new_ids)
-        path = self.debug_dir / f"vehicle_{ids}_{ts}.jpg"
+        # The event vehicle may already have left the active track list;
+        # make sure its last known box is drawn regardless.
+        if int(event.vehicle_id) not in [int(t) for t in tracked.tracker_id]:
+            x1, y1, x2, y2 = event.xyxy.astype(int)
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 2)
+
+        ts_str = time.strftime("%Y%m%d_%H%M%S", time.localtime(event.timestamp))
+        path = self.debug_dir / f"{event.vehicle_id}-{ts_str}-{event.direction}.jpg"
         cv2.imwrite(str(path), annotated)
-        logger.info("Saved snapshot %s (new ids %s)", path, tracked.new_ids)
+        logger.info("Saved snapshot %s", path)
+
+        self.recorder.record_vehicle(event.vehicle_id, event.direction, ts=event.timestamp)
 
     def _process_stream(self, source: RTSPSource, deadline: float | None) -> None:
         """Consume frames until shutdown, duration deadline, or SourceLost."""
@@ -164,8 +183,8 @@ class VehicleCounterApp:
                 continue
 
             tracked = self.tracker.update(detections)
-            if tracked.new_ids:
-                self._save_snapshot(frame, tracked)
+            for event in tracked.events:
+                self._handle_vehicle_event(frame, tracked, event)
 
             fps_count += 1
             now = time.monotonic()

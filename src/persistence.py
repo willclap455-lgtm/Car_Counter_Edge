@@ -1,14 +1,20 @@
-"""Periodic count persistence to Postgres (Phase E).
+"""Persistence to Postgres (Phase E + per-vehicle events).
 
 CountRecorder runs a background APScheduler job that inserts
 ``(timestamp, total_count)`` into the ``vehicle_counts`` table every
-``interval_minutes`` (default 5). Connections come from a
-psycopg_pool.ConnectionPool; a Postgres outage never propagates into the
-pipeline — failed inserts are logged and retried on the next tick.
+``interval_minutes`` (default 5). It also writes one row per newly detected
+vehicle — ``(vehicle_id, timestamp, direction)`` — into ``vehicle_events``
+via record_vehicle(), immediately when the event occurs.
+
+Connections come from a psycopg_pool.ConnectionPool; a Postgres outage never
+propagates into the pipeline — failed count inserts are retried on the next
+tick, and failed vehicle-event inserts are buffered and drained on ticks.
 """
 
 from __future__ import annotations
 
+import time
+from collections import deque
 from collections.abc import Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -20,6 +26,12 @@ from hailo_apps.python.core.common.hailo_logger import get_logger
 logger = get_logger(__name__)
 
 INSERT_SQL = "INSERT INTO vehicle_counts (ts, total_count) VALUES (now(), %s)"
+INSERT_EVENT_SQL = (
+    "INSERT INTO vehicle_events (vehicle_id, ts, direction) VALUES (%s, to_timestamp(%s), %s)"
+)
+
+# Cap the retry buffer so a very long DB outage cannot grow memory unbounded.
+MAX_BUFFERED_EVENTS = 10_000
 
 
 class CountRecorder:
@@ -58,6 +70,8 @@ class CountRecorder:
         )
         self.rows_written = 0
         self.failures = 0
+        self.events_written = 0
+        self._event_buffer: deque[tuple[int, float, str]] = deque(maxlen=MAX_BUFFERED_EVENTS)
 
     def start(self) -> CountRecorder:
         """Open the pool (non-blocking) and start the scheduler."""
@@ -67,6 +81,7 @@ class CountRecorder:
         return self
 
     def _persist_once(self) -> None:
+        self._drain_event_buffer()
         count = int(self._get_count())
         try:
             with self._pool.connection() as conn:
@@ -77,6 +92,56 @@ class CountRecorder:
             # Never propagate into the pipeline; retry on the next tick.
             self.failures += 1
             logger.error("Failed to persist count (failure %d): %s", self.failures, e)
+
+    def record_vehicle(self, vehicle_id: int, direction: str, ts: float | None = None) -> bool:
+        """Insert one (vehicle_id, timestamp, direction) row into vehicle_events.
+
+        Called from the pipeline whenever a new vehicle's direction resolves.
+        On failure the row is buffered and retried on scheduler ticks.
+
+        Args:
+            vehicle_id: Persistent tracker id of the vehicle.
+            direction: One of UP / DOWN / LEFT / RIGHT / UNKNOWN.
+            ts: Event time (unix epoch seconds); defaults to now.
+
+        Returns:
+            True if the row was written immediately, False if buffered.
+        """
+        row = (int(vehicle_id), float(ts if ts is not None else time.time()), str(direction))
+        try:
+            with self._pool.connection() as conn:
+                conn.execute(INSERT_EVENT_SQL, row)
+            self.events_written += 1
+            logger.info(
+                "Recorded vehicle %d direction=%s (event %d)",
+                row[0],
+                row[2],
+                self.events_written,
+            )
+            return True
+        except Exception as e:
+            self._event_buffer.append(row)
+            logger.error(
+                "Failed to record vehicle %d (buffered %d): %s", row[0], len(self._event_buffer), e
+            )
+            return False
+
+    def _drain_event_buffer(self) -> None:
+        """Retry buffered vehicle-event rows (called on scheduler ticks)."""
+        while self._event_buffer:
+            row = self._event_buffer[0]
+            try:
+                with self._pool.connection() as conn:
+                    conn.execute(INSERT_EVENT_SQL, row)
+                self._event_buffer.popleft()
+                self.events_written += 1
+            except Exception as e:
+                logger.warning(
+                    "Still cannot flush %d buffered vehicle events: %s",
+                    len(self._event_buffer),
+                    e,
+                )
+                break
 
     def flush(self) -> bool:
         """Write the current count immediately (e.g. on SIGTERM).
@@ -98,8 +163,9 @@ class CountRecorder:
             self.flush()
         self._pool.close()
         logger.info(
-            "CountRecorder stopped (rows_written=%d, failures=%d)",
+            "CountRecorder stopped (rows_written=%d, events_written=%d, failures=%d)",
             self.rows_written,
+            self.events_written,
             self.failures,
         )
 
