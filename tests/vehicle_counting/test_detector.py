@@ -3,7 +3,13 @@
 import numpy as np
 import pytest
 
-from src.detector import VEHICLE_CLASSES, Detections, decode_nms_output, letterbox
+from src.detector import (
+    VEHICLE_CLASSES,
+    Detections,
+    class_agnostic_nms,
+    decode_nms_output,
+    letterbox,
+)
 
 MODEL_W = MODEL_H = 640
 
@@ -90,3 +96,27 @@ def test_decode_empty_input():
     dets = decode_nms_output(nms, (640, 640), MODEL_W, MODEL_H, 1.0, 0, 0, VEHICLE_CLASSES, 0.3)
     assert isinstance(dets, Detections)
     assert len(dets) == 0
+
+
+def test_class_agnostic_nms_drops_cross_class_duplicate():
+    # Same physical vehicle detected as car (0.9) and truck (0.7): boxes
+    # overlap heavily; only the higher-scoring one must survive.
+    dets = Detections(
+        xyxy=np.array([[100, 100, 300, 250], [105, 102, 305, 255]], dtype=np.float32),
+        confidence=np.array([0.9, 0.7], dtype=np.float32),
+        class_id=np.array([2, 7], dtype=np.int32),
+    )
+    out = class_agnostic_nms(dets, iou_threshold=0.65)
+    assert len(out) == 1
+    assert out.class_id[0] == 2
+    assert out.confidence[0] == pytest.approx(0.9)
+
+
+def test_class_agnostic_nms_keeps_distinct_vehicles():
+    dets = Detections(
+        xyxy=np.array([[100, 100, 300, 250], [400, 100, 600, 250]], dtype=np.float32),
+        confidence=np.array([0.9, 0.8], dtype=np.float32),
+        class_id=np.array([2, 5], dtype=np.int32),
+    )
+    out = class_agnostic_nms(dets, iou_threshold=0.65)
+    assert len(out) == 2

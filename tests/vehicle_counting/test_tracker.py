@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from src.detector import Detections
-from src.tracker import VehicleTracker, classify_direction
+from src.tracker import VehicleTracker, classify_direction, travel_angle
 
 
 def _car_box(x: float, y: float = 400.0, w: float = 160.0, h: float = 90.0) -> list[float]:
@@ -126,23 +126,35 @@ def _drive_moving_car(tracker: VehicleTracker, step_x: float, step_y: float, fra
 
 
 @pytest.mark.parametrize(
-    ("step_x", "step_y", "expected"),
+    ("step_x", "step_y", "expected", "expected_angle"),
     [
-        (12.0, 0.0, "RIGHT"),
-        (-12.0, 0.0, "LEFT"),
-        (0.0, 12.0, "DOWN"),
-        (0.0, -12.0, "UP"),
+        (12.0, 0.0, "RIGHT", 90.0),
+        (-12.0, 0.0, "LEFT", 270.0),
+        (0.0, 12.0, "DOWN", 180.0),
+        (0.0, -12.0, "UP", 0.0),
     ],
 )
-def test_direction_resolved_for_moving_vehicle(step_x, step_y, expected):
+def test_direction_resolved_for_moving_vehicle(step_x, step_y, expected, expected_angle):
     tracker = VehicleTracker(frame_rate=20)
     events = _drive_moving_car(tracker, step_x, step_y)
     assert len(events) == 1, f"expected exactly one event, got {events}"
     event = events[0]
     assert event.direction == expected
+    assert event.angle == pytest.approx(expected_angle, abs=1.0)
     assert event.vehicle_id in tracker.seen_ids
     assert event.timestamp > 0
     assert event.class_id == 2
+
+
+def test_travel_angle_convention():
+    # 0 = UP, clockwise; image y grows downward.
+    assert travel_angle(0.0, -50.0, 20.0) == pytest.approx(0.0)
+    assert travel_angle(50.0, 0.0, 20.0) == pytest.approx(90.0)
+    assert travel_angle(0.0, 50.0, 20.0) == pytest.approx(180.0)
+    assert travel_angle(-50.0, 0.0, 20.0) == pytest.approx(270.0)
+    assert travel_angle(50.0, -50.0, 20.0) == pytest.approx(45.0)  # up-right diagonal
+    assert travel_angle(-50.0, 50.0, 20.0) == pytest.approx(225.0)  # down-left diagonal
+    assert travel_angle(3.0, 3.0, 20.0) is None  # below threshold -> UNKNOWN
 
 
 def test_one_event_per_vehicle_in_clip():
@@ -158,8 +170,79 @@ def test_one_event_per_vehicle_in_clip():
 def test_stationary_vehicle_times_out_as_unknown():
     tracker = VehicleTracker(frame_rate=20, max_pending_frames=10)
     events = []
-    for _ in range(15):
+    for _ in range(20):
         tracked = tracker.update(_dets([_car_box(400.0)]))  # never moves
         events.extend(tracked.events)
     assert len(events) == 1
     assert events[0].direction == "UNKNOWN"
+    assert events[0].angle is None
+
+
+# ---------------------------------------------------------------------------
+# Double-counting regressions (flapping detector, duplicate concurrent ids)
+# ---------------------------------------------------------------------------
+
+
+def test_flapping_detection_keeps_same_id_and_count():
+    """A distant car flickering out of detection for up to ~2s must re-match
+    its old id (lost_track_buffer) instead of being counted again."""
+    tracker = VehicleTracker(frame_rate=20)
+    x = 100.0
+    for f in range(120):
+        # Detector drops the car for 8 frames every 20 frames, and also
+        # flaps on alternating frames within one stretch.
+        visible = (f % 20) < 12 and not (14 <= f % 20 < 16)
+        boxes = [_car_box(x)] if visible else []
+        tracker.update(_dets(boxes))
+        x += 6.0  # keeps moving while undetected
+    assert tracker.total_count == 1, f"flapping car double-counted: {tracker.total_count}"
+
+
+def test_concurrent_duplicate_id_not_double_counted():
+    """One vehicle producing two overlapping tracks in the same frame (e.g.
+    detected as both car and truck, or a flap re-id) must count once."""
+    tracker = VehicleTracker(frame_rate=20)
+    x = 300.0
+    for f in range(30):
+        boxes = [_car_box(x)]
+        classes = [2]
+        if f >= 10:
+            # Second, slightly offset box over the same car appears and
+            # persists — a second tracker id will be established for it.
+            boxes.append(_car_box(x + 8.0, y=404.0))
+            classes.append(7)
+        dets = Detections(
+            xyxy=np.asarray(boxes, dtype=np.float32),
+            confidence=np.asarray([0.9] * len(boxes), dtype=np.float32),
+            class_id=np.asarray(classes, dtype=np.int32),
+        )
+        tracker.update(dets)
+        x += 10.0
+    assert tracker.total_count == 1, (
+        f"duplicate concurrent track double-counted: {tracker.total_count}"
+    )
+    assert len(tracker.duplicate_ids) >= 1
+
+
+def test_two_real_cars_side_by_side_still_counted_separately():
+    """The duplicate guard must not merge genuinely distinct vehicles."""
+    tracker = VehicleTracker(frame_rate=20)
+    x = 100.0
+    for _ in range(40):
+        # Two cars in adjacent lanes, clearly separated (no box overlap).
+        dets = _dets([_car_box(x, y=300.0), _car_box(x, y=420.0)])
+        tracker.update(dets)
+        x += 10.0
+    assert tracker.total_count == 2
+
+
+def test_single_frame_ghost_detection_not_counted():
+    """A false positive that exists for only 1-2 frames must never be
+    confirmed as a vehicle (minimum_consecutive_frames)."""
+    tracker = VehicleTracker(frame_rate=20)
+    for f in range(40):
+        boxes = [_car_box(100.0 + 10.0 * f)]  # one real car
+        if f == 20:
+            boxes.append(_car_box(600.0, y=100.0))  # one-frame ghost box
+        tracker.update(_dets(boxes))
+    assert tracker.total_count == 1, f"ghost detection was counted: {tracker.total_count}"

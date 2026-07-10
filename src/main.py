@@ -6,7 +6,8 @@ Composes: RTSPSource -> HailoYoloDetector -> VehicleTracker
 Each newly detected vehicle emits a VehicleEvent once its direction of
 travel (UP / DOWN / LEFT / RIGHT, in frame coordinates) resolves:
 - an annotated snapshot is saved as <vehicle_id>-<timestamp>-<direction>.jpg
-- a (vehicle_id, timestamp, direction) row is inserted into vehicle_events
+- a (vehicle_id, timestamp, direction, angle) row is inserted into
+  vehicle_events (angle in degrees: 0=UP, 90=RIGHT, 180=DOWN, 270=LEFT)
 
 Hardening (Phase G):
 - RTSP auto-reconnect with exponential backoff on SourceLost.
@@ -160,7 +161,9 @@ class VehicleCounterApp:
         cv2.imwrite(str(path), annotated)
         logger.info("Saved snapshot %s", path)
 
-        self.recorder.record_vehicle(event.vehicle_id, event.direction, ts=event.timestamp)
+        self.recorder.record_vehicle(
+            event.vehicle_id, event.direction, ts=event.timestamp, angle=event.angle
+        )
 
     def _process_stream(self, source: RTSPSource, deadline: float | None) -> None:
         """Consume frames until shutdown, duration deadline, or SourceLost."""
@@ -251,7 +254,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--debug-dir", default="debug", help="Snapshot directory")
     parser.add_argument(
-        "--score-threshold", type=float, default=0.3, help="Detection confidence threshold"
+        "--score-threshold",
+        type=float,
+        default=0.45,
+        help="Detection confidence threshold (raised from 0.3 to suppress ghost boxes)",
     )
     parser.add_argument(
         "--duration", type=float, default=None, help="Stop after N seconds (for tests)"

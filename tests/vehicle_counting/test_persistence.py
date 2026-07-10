@@ -98,15 +98,19 @@ def test_record_vehicle_inserts_event_row(clean_table):
     recorder.start()
     try:
         ts = time.time()
-        assert recorder.record_vehicle(17, "LEFT", ts=ts) is True
-        assert recorder.record_vehicle(18, "UP") is True
+        assert recorder.record_vehicle(17, "LEFT", ts=ts, angle=270.0) is True
+        assert recorder.record_vehicle(18, "UP", angle=2.5) is True
+        assert recorder.record_vehicle(19, "UNKNOWN") is True  # no angle -> NULL
         with psycopg.connect(DSN) as conn:
             rows = conn.execute(
-                "SELECT vehicle_id, direction, extract(epoch from ts) "
+                "SELECT vehicle_id, direction, angle, extract(epoch from ts) "
                 "FROM vehicle_events ORDER BY vehicle_id"
             ).fetchall()
-        assert [(r[0], r[1]) for r in rows] == [(17, "LEFT"), (18, "UP")]
-        assert abs(float(rows[0][2]) - ts) < 1.0, "stored ts should match event ts"
+        assert [(r[0], r[1]) for r in rows] == [(17, "LEFT"), (18, "UP"), (19, "UNKNOWN")]
+        assert rows[0][2] == pytest.approx(270.0)
+        assert rows[1][2] == pytest.approx(2.5)
+        assert rows[2][2] is None
+        assert abs(float(rows[0][3]) - ts) < 1.0, "stored ts should match event ts"
     finally:
         recorder.stop(flush=False)
 

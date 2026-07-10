@@ -27,7 +27,8 @@ logger = get_logger(__name__)
 
 INSERT_SQL = "INSERT INTO vehicle_counts (ts, total_count) VALUES (now(), %s)"
 INSERT_EVENT_SQL = (
-    "INSERT INTO vehicle_events (vehicle_id, ts, direction) VALUES (%s, to_timestamp(%s), %s)"
+    "INSERT INTO vehicle_events (vehicle_id, ts, direction, angle) "
+    "VALUES (%s, to_timestamp(%s), %s, %s)"
 )
 
 # Cap the retry buffer so a very long DB outage cannot grow memory unbounded.
@@ -71,7 +72,9 @@ class CountRecorder:
         self.rows_written = 0
         self.failures = 0
         self.events_written = 0
-        self._event_buffer: deque[tuple[int, float, str]] = deque(maxlen=MAX_BUFFERED_EVENTS)
+        self._event_buffer: deque[tuple[int, float, str, float | None]] = deque(
+            maxlen=MAX_BUFFERED_EVENTS
+        )
 
     def start(self) -> CountRecorder:
         """Open the pool (non-blocking) and start the scheduler."""
@@ -93,8 +96,14 @@ class CountRecorder:
             self.failures += 1
             logger.error("Failed to persist count (failure %d): %s", self.failures, e)
 
-    def record_vehicle(self, vehicle_id: int, direction: str, ts: float | None = None) -> bool:
-        """Insert one (vehicle_id, timestamp, direction) row into vehicle_events.
+    def record_vehicle(
+        self,
+        vehicle_id: int,
+        direction: str,
+        ts: float | None = None,
+        angle: float | None = None,
+    ) -> bool:
+        """Insert one (vehicle_id, timestamp, direction, angle) row into vehicle_events.
 
         Called from the pipeline whenever a new vehicle's direction resolves.
         On failure the row is buffered and retried on scheduler ticks.
@@ -103,19 +112,27 @@ class CountRecorder:
             vehicle_id: Persistent tracker id of the vehicle.
             direction: One of UP / DOWN / LEFT / RIGHT / UNKNOWN.
             ts: Event time (unix epoch seconds); defaults to now.
+            angle: Angle of travel in degrees (0=UP, 90=RIGHT, 180=DOWN,
+                270=LEFT); None when the direction is UNKNOWN.
 
         Returns:
             True if the row was written immediately, False if buffered.
         """
-        row = (int(vehicle_id), float(ts if ts is not None else time.time()), str(direction))
+        row = (
+            int(vehicle_id),
+            float(ts if ts is not None else time.time()),
+            str(direction),
+            float(angle) if angle is not None else None,
+        )
         try:
             with self._pool.connection() as conn:
                 conn.execute(INSERT_EVENT_SQL, row)
             self.events_written += 1
             logger.info(
-                "Recorded vehicle %d direction=%s (event %d)",
+                "Recorded vehicle %d direction=%s angle=%s (event %d)",
                 row[0],
                 row[2],
+                row[3],
                 self.events_written,
             )
             return True
