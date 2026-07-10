@@ -43,6 +43,41 @@ class Detections:
         return len(self.xyxy)
 
 
+def _iou(box_a: np.ndarray, box_b: np.ndarray) -> float:
+    xa, ya = max(box_a[0], box_b[0]), max(box_a[1], box_b[1])
+    xb, yb = min(box_a[2], box_b[2]), min(box_a[3], box_b[3])
+    inter = max(0.0, xb - xa) * max(0.0, yb - ya)
+    area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
+    area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
+    union = area_a + area_b - inter
+    return float(inter / union) if union > 0 else 0.0
+
+
+def class_agnostic_nms(detections: Detections, iou_threshold: float = 0.65) -> Detections:
+    """Suppress overlapping boxes across classes, keeping the highest score.
+
+    The HEF's on-chip NMS runs per class, so one vehicle detected as e.g.
+    both "car" and "truck" survives with two overlapping boxes — which the
+    tracker then double-counts. This pass removes such duplicates.
+    """
+    n = len(detections)
+    if n <= 1:
+        return detections
+    order = np.argsort(-detections.confidence)
+    keep: list[int] = []
+    for idx in order:
+        if all(_iou(detections.xyxy[idx], detections.xyxy[k]) < iou_threshold for k in keep):
+            keep.append(int(idx))
+    if len(keep) == n:
+        return detections
+    keep_arr = np.asarray(sorted(keep), dtype=np.int64)
+    return Detections(
+        xyxy=detections.xyxy[keep_arr],
+        confidence=detections.confidence[keep_arr],
+        class_id=detections.class_id[keep_arr],
+    )
+
+
 def letterbox(frame: np.ndarray, model_w: int, model_h: int) -> tuple[np.ndarray, float, int, int]:
     """
     Resize with unchanged aspect ratio and pad to (model_h, model_w).
@@ -146,7 +181,8 @@ class HailoYoloDetector:
         self,
         hef_path: str,
         classes: set[int] | frozenset[int] = VEHICLE_CLASSES,
-        score_threshold: float = 0.3,
+        score_threshold: float = 0.45,
+        nms_iou_threshold: float = 0.65,
     ) -> None:
         # Imported lazily: pulls in hailo_platform, which needs libhailort.
         from hailo_apps.python.core.common.hailo_inference import HailoInfer
@@ -154,6 +190,7 @@ class HailoYoloDetector:
         self.hef_path = str(hef_path)
         self.classes = frozenset(classes)
         self.score_threshold = float(score_threshold)
+        self.nms_iou_threshold = float(nms_iou_threshold)
         self._infer = HailoInfer(self.hef_path, batch_size=1)
         self.input_h, self.input_w, _ = self._infer.get_input_shape()
         logger.info(
@@ -183,7 +220,7 @@ class HailoYoloDetector:
         job.wait(timeout_ms)
         if not results:
             return Detections()
-        return decode_nms_output(
+        detections = decode_nms_output(
             results[0],
             frame.shape[:2],
             self.input_w,
@@ -194,6 +231,8 @@ class HailoYoloDetector:
             self.classes,
             self.score_threshold,
         )
+        # On-chip NMS is per class; drop cross-class duplicates of one vehicle.
+        return class_agnostic_nms(detections, self.nms_iou_threshold)
 
     def close(self) -> None:
         """Release the configured model and VDevice resources."""

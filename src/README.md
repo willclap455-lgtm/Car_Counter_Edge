@@ -25,8 +25,31 @@ if it never moves enough within `max_pending_frames` (default 60 ≈ 3 s at
 20 FPS) it is recorded as `UNKNOWN`. When the direction resolves:
 
 - a snapshot is saved as `debug/<vehicle_id>-<YYYYmmdd_HHMMSS>-<direction>.jpg`
-- a `(vehicle_id, ts, direction)` row is inserted into `vehicle_events`
+- a `(vehicle_id, ts, direction, angle)` row is inserted into `vehicle_events`
   (buffered and retried if Postgres is down)
+
+The `angle` column stores the exact angle of travel in degrees on the same
+conceptual plane: 0° = UP, 90° = RIGHT, 180° = DOWN, 270° = LEFT (clockwise).
+It is NULL when the direction is UNKNOWN. The angle is for debugging only
+and is not part of the snapshot filename.
+
+## Double-count / false-positive protection
+
+- **Cross-class NMS** (`detector.class_agnostic_nms`): the HEF's on-chip NMS
+  runs per class, so one vehicle detected as both e.g. "car" and "truck"
+  yields two overlapping boxes; the lower-scoring one is dropped.
+- **Track confirmation** (`minimum_consecutive_frames=3`): a detection must
+  persist 3 consecutive frames before it is confirmed and counted, so
+  single-frame flickers and ghost boxes never become counts.
+- **Lost-track persistence** (`lost_track_buffer=90` → ~3 s at 20 FPS): a
+  vehicle that flaps out of detection briefly re-matches its old id instead
+  of getting a new one. Per-track state is a few hundred bytes and is purged
+  after the buffer expires, so long runs stay lightweight.
+- **Duplicate-id guard** (`duplicate_iou_threshold=0.55`): if a brand-new
+  track's box overlaps an already-counted visible track, it is flagged as a
+  duplicate id for the same vehicle and excluded from the count.
+- **Score threshold raised to 0.45** (from 0.3) to suppress low-confidence
+  ghost boxes (`--score-threshold` to tune).
 
 ## Modules
 
